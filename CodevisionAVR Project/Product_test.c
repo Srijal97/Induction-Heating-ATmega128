@@ -1,0 +1,395 @@
+#include <mega128.h>
+
+#include <delay.h>
+#include <string.h>
+#include <glcd.h>
+#include <stdio.h>
+#include "logo.h"
+
+#ifndef RXB8
+#define RXB8 1
+#endif
+
+#ifndef TXB8
+#define TXB8 0
+#endif
+
+#ifndef UPE
+#define UPE 2
+#endif
+
+#ifndef DOR
+#define DOR 3
+#endif
+
+#ifndef FE
+#define FE 4
+#endif
+
+#ifndef UDRE
+#define UDRE 5
+#endif
+
+#ifndef RXC
+#define RXC 7
+#endif
+
+#define FRAMING_ERROR        (1 << FE)
+#define PARITY_ERROR         (1 << UPE)
+#define DATA_OVERRUN         (1 << DOR)
+#define DATA_REGISTER_EMPTY  (1 << UDRE)
+#define RX_COMPLETE          (1 << RXC)
+
+char machine_state = 0;  // 0 - OFF, 1 - ON
+char old_machine_state = 0;
+char error_flag = 0;
+char freq_error_flag = 0;
+
+int i;
+
+float frequency_count = 0;
+float frequency_count_old = 0;
+
+float duty_cycle_count;
+float mult_factor;
+float x;
+
+// TIME is in Seconds.
+//UL(816) corresponds to 10kHZ and LL(204) corresponds 40kHz
+//UL(1024) -- 0kHz
+float UL = 185; //UL (218) -- 18kHz,
+float LL = 135; //LL (135) -- 30kHz  on GATE DRIVERS  
+float TIME = 5;
+float delay_time_stop;
+float delay_time_start;
+
+//int cnt10ms = 0;  // Timer 10ms event flag
+//int cnt100ms = 0;  //Timer 100ms event flag
+
+short int on_button_state = 0x0000;
+short int off_button_state = 0x0000;
+
+#define ADC_VREF_TYPE 0x00
+
+//Initialize ports, ADC, Timer, etc.
+void initialize() {
+    PORTA = 0x00;
+    DDRA = 0x37; // port A GLCD control port 
+
+    PORTB = 0x00;
+    DDRB = 0x21; // PB.5 for Timer 1 PWM output at OC1A
+    DDRB.6 = 1;  
+    
+    DDRB.2 = 1;  // PB.2 for buzzer as output 
+    PORTB.2 = 1;
+    // DDRB.0=1;
+    // PORTB.0 = 1;
+
+    PORTC = 0x00;
+    DDRC = 0xFF; // GLCD Dataport as output
+
+    PORTD = 0x00;
+    DDRD = 0x08; // for uart 1
+
+    PORTE = 0x0F;
+    DDRE = 0x00; // E as input for interrupts
+
+    PORTF = 0x00;
+    DDRF = 0x00;
+
+    PORTG = 0x00;
+    DDRG = 0x00;
+
+    // PWM generation using Timer 1 at OC1A --> PB.5 
+    // Timer Clock and mode controlled using TCCR1A and TCCR1B 
+    // Timer Clock --> 8MHz
+    // OC1A --> Non - Inverted output
+    // TOP vlaue --> ICR1 (16 bit)
+    // Compare value --> OCR1A (16 bit) ---- take care when resetting ICR on the  fly, it is not double buffered  
+    // Duty Cycle % = (OCR1A/ICR1)*100
+    TCCR1A = 0x82;
+
+    TCCR1B = 0x18;
+    TCNT1H = 0x00;
+    TCNT1L = 0x00;
+    ICR1H = 0x03;
+    ICR1L = 0xff;
+    OCR1AH = 0x01;
+    OCR1AL = 0xFF;
+    OCR1BH = 0x00;
+    OCR1BL = 0x00;
+    OCR1CH = 0x00;
+    OCR1CL = 0x00;
+
+    // delta T ----> control using Timer 3 
+    // Timer Clock and mode controlled using TCCR3A and TCCR3B 
+    // Timer Clock --> 1MHz
+    // CTC mode --> top value ---> OCR3A
+    // Interrupt triggered when counter reaches OCR3A value and is cleared 
+    // Interrupt Rate = (OCR3A/Timer clock)
+    TCCR3A = 0x00;
+    TCCR3B = 0x09;//0x0B;
+    TCNT3H = 0x00;
+    TCNT3L = 0x00;
+    ICR3H = 0x00;
+    ICR3L = 0x00;
+    OCR3AH = 0xFF;
+    OCR3AL = 0xFF;
+    OCR3BH = 0x00;
+    OCR3BL = 0x00;
+    OCR3CH = 0x00;
+    OCR3CL = 0x00;
+
+    // External Interrupt(s) initialization
+    EICRA = 0x00; // Interrupts trigerred on rising edge; Change mode using EICR
+    EICRB = 0x00;
+    EIMSK = 0x00;
+    EIFR = 0x00;
+
+    // Timer(s)/Counter(s) Interrupt(s) initialization
+    TIMSK = 0x00;
+
+    ETIMSK = 0x04;
+
+    // USART0 initialization
+    // Communication Parameters: 8 Data, 1 Stop, No Parity
+    // USART0 Receiver: On
+    // USART0 Transmitter: On
+    // USART0 Mode: Asynchronous
+    // USART0 Baud Rate: 9600
+    UCSR0A = 0x00;
+    UCSR0B = 0x18;
+    UCSR0C = 0x06;
+    UBRR0H = 0x00;
+    UBRR0L = 0x33;
+
+    // USART1 initialization
+    // Communication Parameters: 8 Data, 1 Stop, No Parity
+    // USART1 Receiver: On
+    // USART1 Transmitter: On
+    // USART1 Mode: Asynchronous
+    // USART1 Baud Rate: 9600
+    UCSR1A = 0x00;
+    UCSR1B = 0x18;
+    UCSR1C = 0x06;
+    UBRR1H = 0x00;
+    UBRR1L = 0x33;
+
+    // Analog Comparator initialization
+    // Analog Comparator: Off
+    // Analog Comparator Input Capture by Timer/Counter 1: Off
+    ACSR = 0x80;
+    SFIOR = 0x00;
+
+    // ADC initialization
+    // ADC Clock frequency: 1000.000 kHz
+    // ADC Voltage Reference: AREF pin
+    ADMUX = ADC_VREF_TYPE & 0xff;
+    ADCSRA = 0x81;
+
+    // SPI initialization
+    // SPI disabled
+    SPCR = 0x00;
+
+    // TWI initialization
+    // TWI disabled
+    TWCR = 0x00;
+
+    PORTB .0 = 0;
+    TCCR1B = 0x18;
+}
+
+// Read the AD conversion result
+unsigned int read_adc(unsigned char adc_input) { //PORTB.6=1;
+    ADMUX = adc_input | (ADC_VREF_TYPE & 0xff);
+    // Delay needed for the stabilization of the ADC input voltage
+    delay_us(10);
+    // Start the AD conversion                   
+    ADCSRA |= 0x40;
+    // Wait for the AD conversion to complete
+    while ((ADCSRA & 0x10) == 0);
+    ADCSRA |= 0x10;
+    //PORTB.6=0;
+    //ADCW = ((ADCW/1024)*(UL-LL))+UL;
+    return ADCW;
+}
+
+void indicate_machine_on() {
+    PORTC.0 = 1;   // ON LED on C.0, active HIGH logic
+    PORTC.2 = 0;
+}
+
+void indicate_machine_off() {
+    PORTC.0 = 0;
+    PORTC.2 = 1;
+}
+
+void soft_start() {
+    x = read_adc(0x03);
+    x = ((x / 1024) * (UL - LL)) + LL;     
+    
+    delay_time_start = (TIME * 100) / (UL - LL);
+    
+
+    if (x > UL) {
+        x = UL;
+    } else if (x < LL) {
+        x = LL;
+    }
+    
+    ICR1 = LL;
+    OCR1A = 0.5 * ICR1;
+    
+    TCCR1B = 0x19;
+    PORTB.0 = 1;
+
+    for (i = LL; i < x; i++) {
+        ICR1 = i;
+        OCR1A = 0.5 * ICR1;
+        delay_ms(delay_time_start);
+    }          
+}
+
+void soft_stop() {
+    x = frequency_count;
+    
+    delay_time_stop = (TIME * 100) / (UL - LL);
+    
+    for (i = x; i > LL; i--) {
+        ICR1 = i;
+        OCR1A = 0.5 * ICR1;
+        delay_ms(delay_time_stop);
+    }
+
+    PORTB .0 = 0;
+    TCCR1B = 0x18;
+}
+
+void check_sensor_states() {
+    // PINE.4 --> heat sensor
+    // PINE.5 --> crucible sensor
+    // PINE.6 --> water sensor
+            
+    if (PINE.4 == 1 || PINE.5 == 1 || PINE.6 == 1) {  // if any fault detected by sensors
+        machine_state = 0;
+        error_flag = 1;    
+    } else {
+        error_flag = 0;
+    }
+}
+
+
+// Timer3 overflow interrupt service routine
+interrupt[TIM3_OVF] void timer3_ovf_isr(void) {
+
+    // ISR called every 8.595 msec when TCCRB = 0x09, and OCR3A = 0xFFFF   
+        
+    // switch debounce logic. refer: https://www.embedded.com/electronics-blogs/break-points/4024981/My-favorite-software-debouncers
+    // 16 bit shifts = approx 130msec debounce delay    
+    on_button_state = (0x8000 | !PIND.7) | (on_button_state << 1);  
+    if(on_button_state == 0xC000) {     
+        
+        if(machine_state == 0 && error_flag == 0 && freq_error_flag == 0) { // if machine is OFF
+              
+            machine_state = 1;     
+        }
+    }    
+    
+    off_button_state = (0x8000 | !PIND.6) | (off_button_state << 1);       
+    if(off_button_state == 0xC000 ) {         
+        
+        if(machine_state == 1) {
+                               
+            machine_state = 0;   
+        }
+    }
+    
+    frequency_count = read_adc(0x03);
+        
+    frequency_count = ((frequency_count / 1024) * (UL - LL)) + LL;
+        
+    frequency_count = (frequency_count - frequency_count_old)*0.1 + frequency_count_old;
+        
+    frequency_count_old = frequency_count;
+        
+    if (frequency_count < 140 && machine_state == 1) {
+        machine_state = 0;
+        freq_error_flag = 1;   
+    } else if (frequency_count > 145 && freq_error_flag == 1){
+        machine_state = 1;
+        freq_error_flag = 0;  
+                
+        mult_factor = 50;
+        duty_cycle_count = mult_factor * frequency_count / 100;
+        OCR1A = duty_cycle_count;
+        ICR1 = frequency_count;
+    } else {
+        mult_factor = 50;
+        duty_cycle_count = mult_factor * frequency_count / 100;
+        OCR1A = duty_cycle_count;
+        ICR1 = frequency_count;
+    }                  
+
+}
+
+// Get a character from the USART1 Receiver
+#pragma used+
+
+char getchar1(void) {
+    char status, data;
+    while (1) {
+        while (((status = UCSR1A) & RX_COMPLETE) == 0);
+        data = UDR1;
+        if ((status & (FRAMING_ERROR | PARITY_ERROR | DATA_OVERRUN)) == 0)
+            return data;
+    }
+} 
+    
+#pragma used-
+
+    
+#pragma used+
+// Write a character to the USART1 Transmitter
+void putchar1(char c) {
+    while ((UCSR1A & DATA_REGISTER_EMPTY) == 0);
+    UDR1 = c;
+}
+
+#pragma used-
+
+void main(void) {
+
+    initialize();
+    
+    indicate_machine_off();
+        
+    delay_ms(100);
+    
+    // Global enable interrupts
+    #asm("sei")  
+
+    while (1) {
+            
+        check_sensor_states();
+        
+        if (old_machine_state != machine_state) {
+            if (machine_state == 1 && error_flag == 0 && freq_error_flag == 0) {
+                ETIMSK = 0x00;  // disable all timer ISRs
+                soft_start(); 
+                ETIMSK = 0x04;  // enable timer 3 ISR
+                
+                indicate_machine_on();
+                
+                old_machine_state = machine_state;
+            } else if (machine_state == 0) {
+                ETIMSK = 0x00;
+                soft_stop();  
+                ETIMSK = 0x04;
+                
+                indicate_machine_off();
+                
+                old_machine_state = machine_state;
+            }    
+        }             
+    }
+}

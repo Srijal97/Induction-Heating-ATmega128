@@ -1,0 +1,33 @@
+RAM Allocation
+Variable                                                          Address   Size
+--------------------------------------------------------------------------------
+prevLet                                                           0x0500       2
+stat                                                              0x0502       1
+prevX                                                             0x0503       1
+prevY                                                             0x0504       1
+frequency_count                                                   0x0505       4
+frequency_count_old                                               0x0509       4
+duty_cycle_count                                                  0x050D       4
+mult_factor                                                       0x0511       4
+x                                                                 0x0515       4
+UL                                                                0x0519       4
+LL                                                                0x051D       4
+TIME                                                              0x0521       4
+delay_time_stop                                                   0x0525       4
+delay_time_start                                                  0x0529       4
+_seed                                                             0x052D       4
+
+EEPROM Allocation
+Variable                                                          Address   Size
+--------------------------------------------------------------------------------
+
+Register Allocation
+Variable                                                          Register  Size
+--------------------------------------------------------------------------------
+machine_state                                                     R5           1
+old_machine_state                                                 R4           1
+error_flag                                                        R7           1
+freq_error_flag                                                   R6           1
+i                                                                 R8,R9        2
+on_button_state                                                   R10,R11      2
+off_button_state                                                  R12,R13      2
